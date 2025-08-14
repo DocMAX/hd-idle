@@ -127,6 +127,12 @@ func updateState(tmp DiskStats, config *Config) {
 		return
 	}
 
+	// Ensure status directory exists
+	statusDir := "/var/run/hd-idle"
+	if _, err := os.Stat(statusDir); os.IsNotExist(err) {
+		os.MkdirAll(statusDir, 0755)
+	}
+
 	intervalDurationInSeconds := now.Unix() - lastNow.Unix()
 	if intervalDurationInSeconds > config.SkewTime.Milliseconds()/1000 {
 		/* we slept too long, assume a suspend event and disks may be spun up */
@@ -159,6 +165,12 @@ func updateState(tmp DiskStats, config *Config) {
 				previousSnapshots[dsi].LastSpunDownAt = now
 				previousSnapshots[dsi].SpinDownAt = now
 				previousSnapshots[dsi].SpunDown = true
+				
+				// Write spin down status
+				statusFile := fmt.Sprintf("/var/run/hd-idle/%s.status", ds.Name)
+				if err := os.WriteFile(statusFile, []byte("0"), 0644); err != nil && config.Defaults.Debug {
+					fmt.Printf("Failed to write status file: %v\n", err)
+				}
 			}
 		}
 
@@ -169,6 +181,12 @@ func updateState(tmp DiskStats, config *Config) {
 			fmt.Printf("%s spinup\n", config.resolveDeviceGivenName(ds.Name))
 			logSpinup(ds, config.Defaults.LogFile, config.resolveDeviceGivenName(ds.Name))
 			previousSnapshots[dsi].SpinUpAt = now
+			
+			// Write spin up status
+			statusFile := fmt.Sprintf("/var/run/hd-idle/%s.status", ds.Name)
+			if err := os.WriteFile(statusFile, []byte("1"), 0644); err != nil && config.Defaults.Debug {
+				fmt.Printf("Failed to write status file: %v\n", err)
+			}
 		}
 		previousSnapshots[dsi].Reads = tmp.Reads
 		previousSnapshots[dsi].Writes = tmp.Writes
