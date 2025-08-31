@@ -50,6 +50,7 @@ func main() {
 		PowerCondition: 0,
 		Debug:          false,
 		SymlinkPolicy:  0,
+		SkipIfMounted:  false,
 	}
 	var config = &Config{
 		Devices:  []DeviceConf{},
@@ -123,6 +124,7 @@ func main() {
 				PowerCondition: config.Defaults.PowerCondition,
 			}
 			config.NameMap[deviceRealPath] = name
+			deviceConf.SkipIfMounted = config.Defaults.SkipIfMounted
 
 		case "-i":
 			s, err := argument(index)
@@ -190,6 +192,12 @@ func main() {
 		case "-d":
 			config.Defaults.Debug = true
 
+		case "-M":
+			config.Defaults.SkipIfMounted = true
+			if deviceConf != nil {
+				deviceConf.SkipIfMounted = true
+			}
+
 		case "-h":
 			usage()
 			os.Exit(0)
@@ -249,8 +257,22 @@ func argument(index int) (string, error) {
 }
 
 func usage() {
-	fmt.Println("usage: hd-idle [-t <disk>] [-T <disk>] [-s <symlink_policy>] [-a <name>] [-i <idle_time>] " +
-		"[-c <command_type>] [-p power_condition] [-l <logfile>] [-d] [-I] [-h]")
+	fmt.Println(`usage: hd-idle [options]
+
+Options:
+  -t <disk>             Test mode: spindown the specified disk immediately.
+  -T <disk>             Test mode: check if the specified disk is part of a mounted Btrfs or ZFS filesystem and exit.
+  -s <symlink_policy>   Symlink policy: 0 (resolve once), 1 (resolve on retry). Default is 0.
+  -a <name>             Add a device to monitor. Can be a device name (e.g., sda) or a symlink (e.g., /dev/disk/by-id/...).
+                        This option can be used multiple times for multiple devices.
+  -i <idle_time>        Idle time in seconds before spindown. Applies to the last specified device (-a) or as a default.
+  -c <command_type>     Command type for spindown: 'scsi' or 'ata'. Applies to the last specified device (-a) or as a default.
+  -p <power_condition>  Power condition for SCSI devices (0-15). Applies to the last specified device (-a) or as a default.
+  -l <logfile>          Path to a log file for recording spinup events.
+  -d                    Enable debug output.
+  -I                    Ignore prior spindown state (force spindown even if already spun down).
+  -M                    Skip spindown if the device is currently mounted. Applies to the last specified device (-a) or as a default.
+  -h                    Display this help message.`)
 }
 
 func poolInterval(deviceConfs []DeviceConf) time.Duration {

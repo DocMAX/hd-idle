@@ -24,6 +24,8 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -41,6 +43,7 @@ type DefaultConf struct {
 	LogFile                 string
 	SymlinkPolicy           int
 	IgnoreSpinDownDetection bool
+	SkipIfMounted           bool
 }
 
 type DeviceConf struct {
@@ -49,6 +52,7 @@ type DeviceConf struct {
 	Idle           time.Duration
 	CommandType    string
 	PowerCondition uint8
+	SkipIfMounted  bool
 }
 
 type Config struct {
@@ -151,6 +155,26 @@ func updateState(tmp DiskStats, config *Config) {
 			timeSinceLastSpunDown := now.Sub(ds.LastSpunDownAt)
 
 			if ds.IdleTime != 0 && idleDuration > ds.IdleTime && timeSinceLastSpunDown > ds.IdleTime {
+				// Check if spindown should be skipped if the device is mounted
+				skip := config.Defaults.SkipIfMounted
+				if deviceConf := deviceConfig(ds.Name, config); deviceConf != nil {
+					skip = deviceConf.SkipIfMounted
+				}
+
+				if skip {
+					devicePath := fmt.Sprintf("/dev/%s", ds.Name)
+					mounted, err := isDeviceMounted(devicePath, config.Defaults.Debug)
+					if err != nil {
+						fmt.Printf("Error checking mount status for %s: %v\n", config.resolveDeviceGivenName(ds.Name), err)
+					}
+					if mounted {
+						if config.Defaults.Debug {
+							fmt.Printf("%s spindown skipped: device is mounted\n", config.resolveDeviceGivenName(ds.Name))
+						}
+						return
+					}
+				}
+
 				if ds.SpunDown && config.Defaults.IgnoreSpinDownDetection {
 					fmt.Printf("%s spindown (ignoring prior spin down state)\n",
 						config.resolveDeviceGivenName(ds.Name))
@@ -307,11 +331,24 @@ func (c *Config) String() string {
 	for _, device := range c.Devices {
 		devices += "{" + device.String() + "}"
 	}
-	return fmt.Sprintf("symlinkPolicy=%d, defaultIdle=%v, defaultCommand=%s, defaultPowerCondition=%v, debug=%t, logFile=%s, devices=%s, ignoreSpinDownDetection=%t",
-		c.Defaults.SymlinkPolicy, c.Defaults.Idle.Seconds(), c.Defaults.CommandType, c.Defaults.PowerCondition, c.Defaults.Debug, c.Defaults.LogFile, devices, c.Defaults.IgnoreSpinDownDetection)
+	return fmt.Sprintf("symlinkPolicy=%d, defaultIdle=%v, defaultCommand=%s, defaultPowerCondition=%v, debug=%t, logFile=%s, devices=%s, ignoreSpinDownDetection=%t, skipIfMounted=%t",
+		c.Defaults.SymlinkPolicy, c.Defaults.Idle.Seconds(), c.Defaults.CommandType, c.Defaults.PowerCondition, c.Defaults.Debug, c.Defaults.LogFile, devices, c.Defaults.IgnoreSpinDownDetection, c.Defaults.SkipIfMounted)
 }
 
 func (dc *DeviceConf) String() string {
-	return fmt.Sprintf("name=%s, givenName=%s, idle=%v, commandType=%s, powerCondition=%v",
-		dc.Name, dc.GivenName, dc.Idle.Seconds(), dc.CommandType, dc.PowerCondition)
+	return fmt.Sprintf("name=%s, givenName=%s, idle=%v, commandType=%s, powerCondition=%v, skipIfMounted=%t",
+		dc.Name, dc.GivenName, dc.Idle.Seconds(), dc.CommandType, dc.PowerCondition, dc.SkipIfMounted)
+}
+
+// isDeviceMounted checks if a given device is currently mounted.
+func isDeviceMounted(device string, debug bool) (bool, error) {
+	cmd := exec.Command("findmnt", "-n", "-o", "TARGET", device)
+	output, err := cmd.Output()
+	if err != nil {
+		if debug {
+			fmt.Printf("Error checking mount status for %s: %v\n", device, err)
+		}
+		return false, nil // Assume not mounted if findmnt fails
+	}
+	return len(strings.TrimSpace(string(output))) > 0, nil
 }
