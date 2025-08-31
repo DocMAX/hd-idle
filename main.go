@@ -20,11 +20,7 @@ import (
 	"fmt"
 	"github.com/adelolmo/hd-idle/io"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -51,6 +47,7 @@ func main() {
 		Debug:          false,
 		SymlinkPolicy:  0,
 		SkipIfMounted:  false,
+		DryRun:         false,
 	}
 	var config = &Config{
 		Devices:  []DeviceConf{},
@@ -198,6 +195,9 @@ func main() {
 				deviceConf.SkipIfMounted = true
 			}
 
+		case "-N":
+			config.Defaults.DryRun = true
+
 		case "-h":
 			usage()
 			os.Exit(0)
@@ -210,6 +210,7 @@ func main() {
 			config.Defaults.CommandType,
 			config.Defaults.PowerCondition,
 			config.Defaults.Debug,
+			config.Defaults.DryRun,
 		); err != nil {
 			fmt.Println(err.Error())
 			os.Exit(1)
@@ -219,11 +220,11 @@ func main() {
 
 	if testMode {
 		// Check if device is part of a mounted btrfs or zfs filesystem
-		if isBtrfs, btrfsInfo := checkBtrfsDevice(disk); isBtrfs {
+		if isBtrfs, btrfsInfo := CheckBtrfsDevice(disk); isBtrfs {
 			fmt.Println(btrfsInfo)
 			os.Exit(0)
 		}
-		if isZfs, zfsInfo := checkZfsDevice(disk); isZfs {
+		if isZfs, zfsInfo := CheckZfsDevice(disk); isZfs {
 			fmt.Println(zfsInfo)
 			os.Exit(0)
 		}
@@ -272,6 +273,7 @@ Options:
   -d                    Enable debug output.
   -I                    Ignore prior spindown state (force spindown even if already spun down).
   -M                    Skip spindown if the device is currently mounted. Applies to the last specified device (-a) or as a default.
+  -N                    Dry-run mode: simulate spindown actions without executing them.
   -h                    Display this help message.`)
 }
 
@@ -295,178 +297,4 @@ func poolInterval(deviceConfs []DeviceConf) time.Duration {
 		return time.Second
 	}
 	return sleepTime
-}
-
-// checkBtrfsDevice checks if a device is part of a mounted Btrfs filesystem
-func checkBtrfsDevice(device string) (bool, string) {
-	// Check if device is valid
-	if !fileExists(device) {
-		return false, fmt.Sprintf("Error: %s is not a valid block device.", device)
-	}
-
-	// Get mounted btrfs filesystems
-	mounts, err := exec.Command("mount", "-t", "btrfs").Output()
-	if err != nil {
-		return false, fmt.Sprintf("%s is not part of any mounted Btrfs filesystem.", device)
-	}
-
-	// Parse mount points
-	mountPoints := parseMountPoints(string(mounts))
-	if len(mountPoints) == 0 {
-		return false, fmt.Sprintf("%s is not part of any mounted Btrfs filesystem.", device)
-	}
-
-	// Check each mount point
-	for _, mountPoint := range mountPoints {
-		// Run btrfs filesystem show for this mount point
-		cmd := exec.Command("btrfs", "filesystem", "show", mountPoint)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			continue
-		}
-
-		// Check if device is in the output
-		if strings.Contains(string(output), device) {
-			// Check if device is marked as missing
-			if strings.Contains(string(output), device+" missing") {
-				return true, fmt.Sprintf("%s is part of a Btrfs filesystem at %s but is marked as MISSING.", device, mountPoint)
-			}
-			return true, fmt.Sprintf("%s is part of a mounted Btrfs filesystem at %s.\nStatus: %s is active in the Btrfs filesystem.", device, mountPoint, device)
-		}
-	}
-
-	return false, fmt.Sprintf("%s is not part of any mounted Btrfs filesystem.", device)
-}
-
-// checkZfsDevice checks if a device is part of a ZFS pool
-func checkZfsDevice(device string) (bool, string) {
-	// Check if device is valid
-	if !fileExists(device) {
-		return false, fmt.Sprintf("Error: %s is not a valid block device.", device)
-	}
-
-	// Get device serial
-	devID := getDeviceSerial(device)
-
-	// Get partitions
-	partitions := getDevicePartitions(device)
-
-	// Get ZFS pools
-	pools, err := exec.Command("zpool", "list", "-H", "-o", "name").Output()
-	if err != nil {
-		return false, fmt.Sprintf("%s is not part of any ZFS pool.", device)
-	}
-
-	// Parse pool names
-	poolNames := strings.Fields(string(pools))
-	if len(poolNames) == 0 {
-		return false, fmt.Sprintf("%s is not part of any ZFS pool.", device)
-	}
-
-	// Check each pool
-	for _, pool := range poolNames {
-		// Build pattern for grep
-		pattern := device
-		if devID != "" {
-			pattern += "|" + devID
-		}
-		for _, part := range partitions {
-			pattern += "|" + part
-		}
-
-		// Check if device is in zpool status
-		cmd := exec.Command("zpool", "status", pool)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			continue
-		}
-
-		// Check if device matches pattern
-		matched, _ := regexp.MatchString(pattern, string(output))
-		if matched {
-			// Check if pool is mounted
-			mountOutput, _ := exec.Command("mount").Output()
-			if strings.Contains(string(mountOutput), "zfs") && strings.Contains(string(mountOutput), pool) {
-				// Get mount point
-				lines := strings.Split(string(mountOutput), "\n")
-				var mpFound string
-				for _, line := range lines {
-					if strings.Contains(line, "zfs") && strings.Contains(line, pool) {
-						fields := strings.Fields(line)
-						if len(fields) > 2 {
-							mpFound = fields[2]
-							break
-						}
-					}
-				}
-
-				// Get device state
-				lines = strings.Split(string(output), "\n")
-				var state string
-				for _, line := range lines {
-					if regexp.MustCompile(pattern).MatchString(line) {
-						fields := strings.Fields(line)
-						if len(fields) > 1 {
-							state = fields[1]
-							break
-						}
-					}
-				}
-
-				if state == "ONLINE" {
-					return true, fmt.Sprintf("%s is part of a mounted ZFS filesystem in pool %s at %s.\nStatus: %s is active in the ZFS pool.", device, pool, mpFound, device)
-				}
-				return true, fmt.Sprintf("%s is part of a ZFS pool %s but is in state %s.", device, pool, state)
-			}
-			return true, fmt.Sprintf("%s is part of ZFS pool %s but the pool is not mounted.", device, pool)
-		}
-	}
-
-	return false, fmt.Sprintf("%s is not part of any ZFS pool.", device)
-}
-
-// Helper functions
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return !os.IsNotExist(err)
-}
-
-func parseMountPoints(mounts string) []string {
-	var mountPoints []string
-	lines := strings.Split(mounts, "\n")
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) >= 3 {
-			mountPoints = append(mountPoints, fields[2])
-		}
-	}
-	return mountPoints
-}
-
-func getDeviceSerial(device string) string {
-	cmd := exec.Command("lsblk", "-no", "SERIAL", device)
-	output, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(output))
-}
-
-func getDevicePartitions(device string) []string {
-	var partitions []string
-	cmd := exec.Command("lsblk", "-ln", "-o", "NAME", device)
-	output, err := cmd.Output()
-	if err != nil {
-		return partitions
-	}
-
-	deviceName := filepath.Base(device)
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, deviceName) && len(line) > len(deviceName) {
-			partitions = append(partitions, "/dev/"+line)
-		}
-	}
-	return partitions
 }
