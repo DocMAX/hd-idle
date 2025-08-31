@@ -45,6 +45,7 @@ func main() {
 		CommandType:    SCSI,
 		PowerCondition: 0,
 		Debug:          false,
+		Verbose:        false, // Initialize new verbose flag
 		SymlinkPolicy:  0,
 		SkipIfMounted:  false,
 		DryRun:         false,
@@ -189,6 +190,9 @@ func main() {
 		case "-d":
 			config.Defaults.Debug = true
 
+		case "-v":
+			config.Defaults.Verbose = true
+
 		case "-M":
 			config.Defaults.SkipIfMounted = true
 			if deviceConf != nil {
@@ -221,11 +225,11 @@ func main() {
 	if testMode {
 		// Check if device is part of a mounted btrfs or zfs filesystem
 		if isBtrfs, btrfsInfo := CheckBtrfsDevice(disk); isBtrfs {
-			fmt.Println(btrfsInfo)
+			fmt.Printf("Spindown skipped: %s\n", btrfsInfo)
 			os.Exit(0)
 		}
 		if isZfs, zfsInfo := CheckZfsDevice(disk); isZfs {
-			fmt.Println(zfsInfo)
+			fmt.Printf("Spindown skipped: %s\n", zfsInfo)
 			os.Exit(0)
 		}
 		fmt.Printf("%s is not part of any mounted Btrfs or ZFS filesystem.\n", disk)
@@ -270,7 +274,8 @@ Options:
   -c <command_type>     Command type for spindown: 'scsi' or 'ata'. Applies to the last specified device (-a) or as a default.
   -p <power_condition>  Power condition for SCSI devices (0-15). Applies to the last specified device (-a) or as a default.
   -l <logfile>          Path to a log file for recording spinup events.
-  -d                    Enable debug output.
+  -d                    Enable debug output (disk status).
+  -v                    Enable verbose output (filesystem checks).
   -I                    Ignore prior spindown state (force spindown even if already spun down).
   -M                    Skip spindown if the device is currently mounted. Applies to the last specified device (-a) or as a default.
   -N                    Dry-run mode: simulate spindown actions without executing them.

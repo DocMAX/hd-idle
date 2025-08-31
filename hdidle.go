@@ -42,6 +42,7 @@ type DefaultConf struct {
 	CommandType             string
 	PowerCondition          uint8
 	Debug                   bool
+	Verbose                 bool // New field for verbose output
 	LogFile                 string
 	SymlinkPolicy           int
 	IgnoreSpinDownDetection bool
@@ -120,7 +121,7 @@ func resolveSymlinks(config *Config) {
 				logToFile(config.Defaults.LogFile,
 					fmt.Sprintf("symlink %s resolved to %s", device.GivenName, realPath))
 			}
-			if err != nil && config.Defaults.Debug {
+			if err != nil && config.Defaults.Verbose {
 				fmt.Printf("Cannot resolve sysmlink %s\n", device.GivenName)
 			}
 		}
@@ -171,19 +172,26 @@ func updateState(tmp DiskStats, config *Config) {
 						fmt.Printf("Error checking mount status for %s: %v\n", config.resolveDeviceGivenName(ds.Name), err)
 					}
 					if mounted {
-						if config.Defaults.Debug {
-							fmt.Printf("%s spindown skipped: device is mounted\n", config.resolveDeviceGivenName(ds.Name))
+						if config.Defaults.Verbose {
+							// Show debug info for Btrfs/ZFS
+							if isBtrfs, _ := CheckBtrfsDevice(devicePath); isBtrfs {
+								fmt.Printf("Spindown skipped: %s is part of a mounted Btrfs filesystem\n", devicePath)
+							} else if isZfs, _ := CheckZfsDevice(devicePath); isZfs {
+								fmt.Printf("Spindown skipped: %s is part of a mounted ZFS filesystem\n", devicePath)
+							}
 						}
 						return
 					}
 				}
 
-				if ds.SpunDown && config.Defaults.IgnoreSpinDownDetection {
-					fmt.Printf("%s spindown (ignoring prior spin down state)\n",
-						config.resolveDeviceGivenName(ds.Name))
-				} else {
-					fmt.Printf("%s spindown\n",
-						config.resolveDeviceGivenName(ds.Name))
+				if config.Defaults.Debug || config.Defaults.Verbose || len(config.Defaults.LogFile) > 0 {
+					if ds.SpunDown && config.Defaults.IgnoreSpinDownDetection {
+						fmt.Printf("%s spindown (ignoring prior spin down state)\n",
+							config.resolveDeviceGivenName(ds.Name))
+					} else {
+						fmt.Printf("%s spindown\n",
+							config.resolveDeviceGivenName(ds.Name))
+					}
 				}
 				device := fmt.Sprintf("/dev/%s", ds.Name)
 				if err := spindownDisk(device, ds.CommandType, ds.PowerCondition, config.Defaults.Debug, config.Defaults.DryRun); err != nil {
@@ -205,7 +213,9 @@ func updateState(tmp DiskStats, config *Config) {
 		/* disk had some activity */
 		if ds.SpunDown {
 			/* disk was spun down, thus it has just spun up */
-			fmt.Printf("%s spinup\n", config.resolveDeviceGivenName(ds.Name))
+			if config.Defaults.Debug || config.Defaults.Verbose || len(config.Defaults.LogFile) > 0 {
+				fmt.Printf("%s spinup\n", config.resolveDeviceGivenName(ds.Name))
+			}
 			logSpinup(ds, config.Defaults.LogFile, config.resolveDeviceGivenName(ds.Name))
 			previousSnapshots[dsi].SpinUpAt = now
 
@@ -226,11 +236,10 @@ func updateState(tmp DiskStats, config *Config) {
 		idleDuration := now.Sub(ds.LastIoAt)
 		fmt.Printf("disk=%s command=%s spunDown=%t "+
 			"reads=%d writes=%d idleTime=%v idleDuration=%v "+
-			"spindown=%s spinup=%s lastIO=%s lastSpunDown=%s \n",
+			"spindown=%s spinup=%s lastIO=%s \n",
 			ds.Name, ds.CommandType, ds.SpunDown,
 			ds.Reads, ds.Writes, ds.IdleTime.Seconds(), math.RoundToEven(idleDuration.Seconds()),
-			ds.SpinDownAt.Format(dateFormat), ds.SpinUpAt.Format(dateFormat), ds.LastIoAt.Format(dateFormat),
-			ds.LastSpunDownAt.Format(dateFormat))
+			ds.SpinDownAt.Format(dateFormat), ds.SpinUpAt.Format(dateFormat), ds.LastIoAt.Format(dateFormat))
 	}
 }
 
@@ -342,8 +351,8 @@ func (c *Config) String() string {
 	for _, device := range c.Devices {
 		devices += "{" + device.String() + "}"
 	}
-	return fmt.Sprintf("symlinkPolicy=%d, defaultIdle=%v, defaultCommand=%s, defaultPowerCondition=%v, debug=%t, logFile=%s, devices=%s, ignoreSpinDownDetection=%t, skipIfMounted=%t",
-		c.Defaults.SymlinkPolicy, c.Defaults.Idle.Seconds(), c.Defaults.CommandType, c.Defaults.PowerCondition, c.Defaults.Debug, c.Defaults.LogFile, devices, c.Defaults.IgnoreSpinDownDetection, c.Defaults.SkipIfMounted)
+	return fmt.Sprintf("symlinkPolicy=%d, defaultIdle=%v, defaultCommand=%s, defaultPowerCondition=%v, debug=%t, verbose=%t, logFile=%s, devices=%s, ignoreSpinDownDetection=%t, skipIfMounted=%t",
+		c.Defaults.SymlinkPolicy, c.Defaults.Idle.Seconds(), c.Defaults.CommandType, c.Defaults.PowerCondition, c.Defaults.Debug, c.Defaults.Verbose, c.Defaults.LogFile, devices, c.Defaults.IgnoreSpinDownDetection, c.Defaults.SkipIfMounted)
 }
 
 func (dc *DeviceConf) String() string {
@@ -352,17 +361,17 @@ func (dc *DeviceConf) String() string {
 }
 
 // isDeviceMounted checks if a given device is currently mounted, including Btrfs and ZFS filesystems.
-func isDeviceMounted(device string, debug bool) (bool, error) {
+func isDeviceMounted(device string, verbose bool) (bool, error) {
 	// Check if device is part of a mounted btrfs or zfs filesystem
 	if isBtrfs, _ := CheckBtrfsDevice(device); isBtrfs {
-		if debug {
-			fmt.Printf("Debug: %s is part of a mounted Btrfs filesystem\n", device)
+		if verbose {
+			fmt.Printf("%s is part of a mounted Btrfs filesystem\n", device)
 		}
 		return true, nil
 	}
 	if isZfs, _ := CheckZfsDevice(device); isZfs {
-		if debug {
-			fmt.Printf("Debug: %s is part of a mounted ZFS filesystem\n", device)
+		if verbose {
+			fmt.Printf("%s is part of a mounted ZFS filesystem\n", device)
 		}
 		return true, nil
 	}
@@ -371,8 +380,8 @@ func isDeviceMounted(device string, debug bool) (bool, error) {
 	cmd := exec.Command("findmnt", "-n", "-o", "TARGET", device)
 	output, err := cmd.Output()
 	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-		if debug {
-			fmt.Printf("Debug: %s is mounted directly (generic check)\n", device)
+		if verbose {
+			fmt.Printf("%s is mounted directly (generic check)\n", device)
 		}
 		return true, nil
 	}
@@ -383,15 +392,15 @@ func isDeviceMounted(device string, debug bool) (bool, error) {
 		cmd = exec.Command("findmnt", "-n", "-o", "TARGET", part)
 		output, err = cmd.Output()
 		if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-			if debug {
-				fmt.Printf("Debug: %s (partition of %s) is mounted (generic check)\n", part, device)
+			if verbose {
+				fmt.Printf("%s (partition of %s) is mounted (generic check)\n", part, device)
 			}
 			return true, nil
 		}
 	}
 
-	if debug {
-		fmt.Printf("Debug: %s and its partitions are not mounted\n", device)
+	if verbose {
+		fmt.Printf("%s and its partitions are not mounted\n", device)
 	}
 	return false, nil
 }
